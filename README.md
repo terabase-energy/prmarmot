@@ -188,6 +188,10 @@ The **Lines** column shows lines added (`+`, green) and removed (`−`, red),
 with the changed files on hover. It shows by default on wide windows (1360px
 and up); right-click any column header to show or hide it at other widths.
 
+The **Repository owner** and **Repository name** columns show the two parts of
+`owner/name` separately. Both are hidden by default; right-click any column
+header to enable them. Column visibility is saved between launches.
+
 The **Ticket** column links each PR to its Linear issue. The app reads the
 issue from the comment Linear's GitHub integration posts on the PR (any
 `linear` or `linear-code` comment marked `<!-- linear-linkback -->`, among
@@ -858,6 +862,10 @@ linked PRs. `--json` emits `prmarmot-cli/board@1`:
   Involving me, unless your review is also requested directly.
   `my_approved` holds your own approved PRs waiting to merge, under **My PR approved**
   at the top; `approved` holds other authors’ approved PRs.
+  `done` holds PRs you already reviewed in the Review queue, and other authors’
+  waiting PRs you already reviewed in Involving me and All open. Unanswered
+  comments stay under **Reviewed**, with a note that they wait on the author;
+  an author's reply to your thread returns the PR to your attention.
   `awaiting_my_review` holds other authors’ remaining PRs; `await` holds your own
   under **Awaiting their review**. `awaiting_my_response` holds your PRs with unresolved review comments
   or unapproved review feedback from a reviewer whose review is not currently requested. These groups can be ordered and collapsed independently.
