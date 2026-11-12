@@ -609,8 +609,8 @@ pub fn section_explanation(mode: Mode, kind: SectionKind, all_repos: bool) -> Op
                 .into()
         }
         (_, SectionKind::Category(Category::Todo)) => {
-            "Your review is requested, by name or through one of your teams, and you have not \
-             reviewed it yet."
+            "Your review is requested, by name or through one of your teams, for an initial \
+             review or another look after your previous review."
                 .into()
         }
         (Mode::Authored | Mode::AllOpen, SectionKind::Category(Category::Available)) => {

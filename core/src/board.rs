@@ -1630,6 +1630,7 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
                 .my_review
                 .as_ref()
                 .is_some_and(ReviewVerdict::is_standing)
+                && !needs_review_again(pr, &row, me)
             {
                 Category::Done
             } else {
@@ -1640,6 +1641,60 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
     }
     row.waiting_since = pickup_since(pr, &row, me);
     row
+}
+
+/// GitHub clears an individual request when that person reviews, so a
+/// pending request to you takes precedence over your earlier review. Team
+/// requests can survive your review: require a newer request or a new head
+/// before putting their PR back on your turn.
+fn needs_review_again(pr: &RawPr, row: &BoardRow, me: &str) -> bool {
+    if asks_me_to_review(pr, me) {
+        return true;
+    }
+    if !row.team_review_requested {
+        return false;
+    }
+    if row.reviewed_oid.is_some() && row.head_oid.is_some() && row.reviewed_oid != row.head_oid {
+        return true;
+    }
+    let reviewed_at = row.reviewed_at.as_deref().or_else(|| {
+        row.reviews
+            .iter()
+            .find(|review| {
+                review
+                    .login
+                    .as_deref()
+                    .is_some_and(|login| login.eq_ignore_ascii_case(me))
+            })
+            .and_then(|review| review.submitted_at.as_deref())
+    });
+    pr.timeline_items.nodes.iter().flatten().any(|event| {
+        event.typename == "ReviewRequestedEvent"
+            && event.requested_reviewer.as_ref().is_some_and(|reviewer| {
+                reviewer.slug.as_ref().is_some_and(|slug| {
+                    pr.review_requests
+                        .nodes
+                        .iter()
+                        .filter_map(|node| node.requested_reviewer.as_ref())
+                        .any(|team| {
+                            team.slug
+                                .as_ref()
+                                .is_some_and(|team| team.eq_ignore_ascii_case(slug))
+                                && team.members.nodes.iter().any(|member| {
+                                    member
+                                        .login
+                                        .as_deref()
+                                        .is_some_and(|login| login.eq_ignore_ascii_case(me))
+                                })
+                        })
+                })
+            })
+            && event
+                .created_at
+                .as_deref()
+                .zip(reviewed_at)
+                .is_some_and(|(requested, reviewed)| requested > reviewed)
+    })
 }
 
 fn derive_review_row(
