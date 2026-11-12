@@ -1185,6 +1185,139 @@ fn a_cancelled_check_is_not_a_failing_one() {
 }
 
 #[test]
+fn a_pending_rereview_request_returns_reviewed_prs_to_the_review_section() {
+    use crate::layout::{layout, LayoutItem, SectionKind, Sort};
+
+    // tf-ci-cd#60: every thread resolved, a rewritten head, and a direct
+    // request after the viewer's COMMENTED review. No turns fetch will run.
+    for verdict in ["COMMENTED", "APPROVED", "CHANGES_REQUESTED"] {
+        let mut value = base(60);
+        value["author"] = json!({"login": "alice"});
+        value["headRefOid"] = json!("new-head");
+        value["reviewThreads"] = json!({"totalCount": 5, "nodes": [
+            {"isResolved": true}, {"isResolved": true}, {"isResolved": true},
+            {"isResolved": true}, {"isResolved": true}
+        ]});
+        value["reviews"]["nodes"] = json!([{
+            "author": {"login": "me"}, "state": verdict,
+            "submittedAt": "2026-11-09T15:36:20Z"
+        }]);
+        value["latestReview"] = json!({"nodes": [{
+            "state": verdict, "submittedAt": "2026-11-09T15:36:20Z",
+            "commit": {"oid": "reviewed-head"}
+        }]});
+        value["reviewRequests"] = json!({"totalCount": 1, "nodes": [
+            {"requestedReviewer": {"__typename": "User", "login": "ME"}}
+        ]});
+        value["timelineItems"] = json!({"nodes": [{
+            "__typename": "ReviewRequestedEvent", "createdAt": "2026-11-10T15:10:16Z",
+            "requestedReviewer": {"__typename": "User", "login": "me"}
+        }]});
+
+        for mode in [Mode::Review, Mode::Authored, Mode::AllOpen] {
+            let raw = pr(value.clone());
+            let row = match mode {
+                Mode::Review => derive_review_row(
+                    &raw,
+                    "acme/widgets",
+                    "me",
+                    &cfg(),
+                    QueueProvenance::Requested,
+                ),
+                Mode::Authored => derive_involving_row(&raw, "acme/widgets", "me", &cfg()),
+                Mode::AllOpen => derive_all_open_row(&raw, "acme/widgets", "me", &cfg(), &[]),
+            };
+            assert_eq!(row.category, Category::Todo, "{mode:?}, {verdict}");
+            assert_eq!(row.unresolved, 0);
+            assert!(!wants_turns(&row, mode, "me"));
+            assert!(row.note.contains("new commits since your review"));
+            assert!(row.note.contains("needs your review"));
+            assert_eq!(row.waiting_since.as_deref(), Some("2026-11-10T15:10:16Z"));
+            assert!(
+                layout(&[row], mode, true, &HashSet::new(), true, Sort::Wait)
+                    .iter()
+                    .any(|item| matches!(
+                        item,
+                        LayoutItem::Header {
+                            kind: SectionKind::Category(Category::Todo),
+                            ..
+                        }
+                    ))
+            );
+        }
+
+        // An explicit request still needs a response without a new commit
+        // or when older cached rows do not have review-commit evidence.
+        value["headRefOid"] = json!("reviewed-head");
+        assert_eq!(
+            derive_one(value.clone(), Mode::Review).category,
+            Category::Todo
+        );
+        value["latestReview"] = json!({"nodes": []});
+        assert_eq!(
+            derive_one(value.clone(), Mode::Review).category,
+            Category::Todo
+        );
+        value["isDraft"] = json!(true);
+        assert_eq!(
+            derive_one(value.clone(), Mode::Review).category,
+            Category::Draft
+        );
+        value["isDraft"] = json!(false);
+        value["reviewRequests"] = json!({"totalCount": 1, "nodes": [
+            {"requestedReviewer": {"__typename": "User", "login": "bob"}}
+        ]});
+        assert_eq!(derive_one(value, Mode::Review).category, Category::Done);
+    }
+}
+
+#[test]
+fn team_rereview_needs_new_activity_since_the_viewers_review() {
+    let mut value = base(61);
+    value["author"] = json!({"login": "alice"});
+    value["headRefOid"] = json!("reviewed-head");
+    value["reviews"]["nodes"] = json!([{
+        "author": {"login": "me"}, "state": "COMMENTED",
+        "submittedAt": "2026-11-09T15:36:20Z"
+    }]);
+    value["latestReview"] = json!({"nodes": [{
+        "state": "COMMENTED", "submittedAt": "2026-11-09T15:36:20Z",
+        "commit": {"oid": "reviewed-head"}
+    }]});
+    value["reviewRequests"] = json!({"totalCount": 1, "nodes": [
+        {"requestedReviewer": {"__typename": "Team", "slug": "platform",
+            "members": {"nodes": [{"login": "me"}]}}}
+    ]});
+    value["timelineItems"] = json!({"nodes": [{
+        "__typename": "ReviewRequestedEvent", "createdAt": "2026-11-04T17:52:10Z",
+        "requestedReviewer": {"__typename": "Team", "slug": "platform"}
+    }]});
+    assert_eq!(
+        derive_one(value.clone(), Mode::Review).category,
+        Category::Done
+    );
+    value["headRefOid"] = json!("new-head");
+    assert_eq!(
+        derive_one(value.clone(), Mode::Review).category,
+        Category::Todo
+    );
+    value["headRefOid"] = json!("reviewed-head");
+    value["timelineItems"]["nodes"][0]["createdAt"] = json!("2026-11-10T15:10:16Z");
+    assert_eq!(
+        derive_one(value.clone(), Mode::Review).category,
+        Category::Todo
+    );
+    // The standing review's timestamp also works without the latest alias.
+    value["latestReview"] = json!({"nodes": []});
+    assert_eq!(
+        derive_one(value.clone(), Mode::Review).category,
+        Category::Todo
+    );
+    value["reviewRequests"]["nodes"][0]["requestedReviewer"]["members"] = json!({"nodes": []});
+    assert_eq!(derive_one(value, Mode::Review).category, Category::Done);
+}
+
+#[test]
 fn review_mode_categories_and_notes() {
     // Not yet reviewed, green.
     let mut v = base(20);
@@ -1871,7 +2004,8 @@ fn semantic_observation_is_stable_across_scope_and_queue_derivations() {
         &cfg(),
         QueueProvenance::Requested,
     );
-    assert_ne!(involving.category, review.category);
+    assert_eq!(involving.category, Category::Todo);
+    assert_eq!(review.category, Category::Todo);
     assert_eq!(
         crate::attention::Observation::from_row(&involving),
         crate::attention::Observation::from_row(&review)
