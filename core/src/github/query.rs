@@ -116,7 +116,7 @@ macro_rules! pr_fields {
   latestReview: reviews(last:1, author:$who, states:[APPROVED,COMMENTED,CHANGES_REQUESTED,DISMISSED]){ nodes{ state submittedAt commit{oid} } }
   reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug members(first:100, query:$who){ nodes{login} }} } } }
   reviews(last:60){ nodes{ author{ __typename login } state submittedAt } }
-  reviewThreads(last:100){ totalCount nodes{ isResolved isOutdated path } }
+  reviewThreads(last:100){ totalCount nodes{ isResolved isOutdated path comments(last:1){ totalCount nodes{ author{ login } } } } }
   commits(last:1){ nodes{ commit{ statusCheckRollup{ state contexts(first:30){ checkRunCountsByState{ state count } statusContextCountsByState{ state count } nodes{ __typename ... on CheckRun{ name conclusion detailsUrl } ... on StatusContext{ context state targetUrl } } } } } } }
   history: commits(last:20){ totalCount nodes{ commit{ oid } } }
   timelineItems(last:10, itemTypes:[REVIEW_REQUESTED_EVENT, READY_FOR_REVIEW_EVENT]){ nodes{ __typename ... on ReviewRequestedEvent{ createdAt requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } ... on ReadyForReviewEvent{ createdAt } } }"#
@@ -596,6 +596,14 @@ pub struct ThreadNode {
     /// The file the thread is on. Absent from prototype fixtures.
     #[serde(default)]
     pub path: Option<String>,
+    /// The latest comment and total comment count; absent in older fixtures.
+    #[serde(default)]
+    pub comments: Option<Nodes<ThreadComment>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThreadComment {
+    pub author: Option<Login>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

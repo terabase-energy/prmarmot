@@ -184,6 +184,13 @@ On PRs you authored, unresolved threads keep the PR in **Needs action**, even
 if you have replied or the PR is a draft. Resolving the threads removes that
 blocker; any remaining blockers still apply.
 
+The **Unanswered** column counts unresolved review threads awaiting a reply
+from the PR author. An author reply answers a thread; a reviewer follow-up
+makes it unanswered again. It shows `0` when all open threads are answered,
+`+` for a lower bound, and `—` when reply data is unavailable. It appears
+automatically when space allows; right-click any column header to show it at
+other widths. Its visibility and order are saved with the other columns.
+
 The **Lines** column shows lines added (`+`, green) and removed (`−`, red),
 with the changed files on hover. It shows by default on wide windows (1360px
 and up); right-click any column header to show or hide it at other widths.
@@ -867,10 +874,12 @@ linked PRs. `--json` emits `prmarmot-cli/board@1`:
   comments stay under **Reviewed**, with a note that they wait on the author;
   an author's reply to your thread returns the PR to your attention.
   `awaiting_my_review` holds other authors’ remaining PRs; `await` holds your own
-  under **Awaiting their review**. `awaiting_my_response` holds your PRs with unresolved review comments
-  or unapproved review feedback from a reviewer whose review is not currently requested. These groups can be ordered and collapsed independently.
+  under **Awaiting their review**. `awaiting_my_response` holds your PRs whose
+  **Unanswered** count is greater than zero. Answered threads and review feedback
+  alone do not put a PR in that section. These groups can be ordered and collapsed independently.
 - **PRs:** each carries the facts behind the row: `category`, `ci`, `conflict`,
   `review_decision`, `requested_reviewers`, `reviews`, `my_review`,
+  `unanswered_threads` (unresolved threads awaiting an author reply; null when unknown),
   `unresolved_threads` (with `unresolved_threads_capped` when the PR has more
   threads than the newest 100 that were read, `replied_threads` for the ones
   you answered last, and `returned_threads` for the ones you opened on someone

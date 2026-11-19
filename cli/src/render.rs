@@ -160,6 +160,7 @@ pub fn pr_json(row: &BoardRow, marks: &Marks) -> Value {
         })).collect::<Vec<_>>(),
         "my_review": row.my_review,
         "unresolved_threads": row.unresolved,
+        "unanswered_threads": row.unanswered,
         "unresolved_paths": row.unresolved_paths,
         "failed_checks": row.failed_checks.iter().map(|check| json!({
             "name": check.name,
@@ -2247,6 +2248,7 @@ mod tests {
     fn a_count_from_only_the_newest_threads_says_it_may_be_more() {
         let mut pr = row(1, Category::Action);
         pr.unresolved = 2;
+        pr.unanswered = Some(1);
         pr.unresolved_capped = true;
         pr.blockers = vec![Blocker::UnresolvedComments(2)];
         assert_eq!(note(&pr).text, "resolve 2+ comments");
@@ -2254,7 +2256,10 @@ mod tests {
         assert_eq!(note(&pr).text, "CI failing · 2+ unresolved");
         let json = pr_json(&pr, &Marks::default());
         assert_eq!(json["unresolved_threads"], 2);
+        assert_eq!(json["unanswered_threads"], 1);
         assert_eq!(json["unresolved_threads_capped"], true);
+        pr.unanswered = None;
+        assert!(pr_json(&pr, &Marks::default())["unanswered_threads"].is_null());
     }
 
     #[test]

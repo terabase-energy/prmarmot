@@ -282,22 +282,7 @@ pub fn layout_collapsible<'a>(
 fn section_kind(mode: Mode, row: &BoardRow) -> SectionKind {
     if mode == Mode::Authored && !row.is_own && !row.draft && row.team_review_requested {
         SectionKind::AwaitingMyTeamsReview
-    } else if row.is_own
-        && (row.unresolved > 0
-            || (matches!(
-                row.review_state,
-                ReviewState::Commented | ReviewState::Changes
-            ) && row.reviews.iter().any(|review| {
-                let needs_response = review.state == ReviewVerdict::ChangesRequested
-                    || (review.state == ReviewVerdict::Commented && !review.bot);
-                let pending = review.login.as_ref().is_some_and(|login| {
-                    row.requested
-                        .iter()
-                        .any(|requested| requested.eq_ignore_ascii_case(login))
-                });
-                needs_response && !pending
-            })))
-    {
+    } else if row.is_own && row.unanswered.is_some_and(|count| count > 0) {
         SectionKind::AwaitingMyResponse
     } else if is_approved_section(mode, row) && row.is_own {
         SectionKind::MyApproved
@@ -575,7 +560,7 @@ pub fn section_explanation(mode: Mode, kind: SectionKind, all_repos: bool) -> Op
     // The views that hold other people's PRs next to yours.
     let mixed = mode == Mode::AllOpen || (mode == Mode::Authored && all_repos);
     Some(match (mode, kind) {
-        (_, SectionKind::AwaitingMyResponse) => "You authored these PRs. They have unresolved review comments, or unapproved review feedback from someone whose review is not currently requested. A pending request means you are waiting for that reviewer.".into(),
+        (_, SectionKind::AwaitingMyResponse) => "You authored these PRs. Their Unanswered count is greater than zero: unresolved review threads are awaiting your reply. A reviewer follow-up after your reply makes a thread unanswered again.".into(),
         (_, SectionKind::AwaitingMyTeamsReview) => "A review is requested from a team you belong to, without a direct request to you.".into(),
         (_, SectionKind::AwaitingMyReview) => {
             "Someone else authored these PRs. Check their review status and notes before reviewing."
@@ -701,6 +686,17 @@ pub fn section_summary<'a>(
             rows.iter().any(|row| row.unresolved_capped),
         )),
     };
+    let unanswered = || match rows.iter().filter_map(|row| row.unanswered).sum::<usize>() {
+        0 => None,
+        n => Some(format!(
+            "{n}{} unanswered",
+            if rows.iter().any(|row| row.unresolved_capped) {
+                "+"
+            } else {
+                ""
+            }
+        )),
+    };
     let longest_wait = || {
         rows.iter()
             .filter_map(|row| waiting_secs(row, now))
@@ -726,7 +722,7 @@ pub fn section_summary<'a>(
         | SectionKind::Category(Category::Todo | Category::Available | Category::Await) => {
             vec![longest_wait(), failing()]
         }
-        SectionKind::AwaitingMyResponse => vec![unresolved(), failing(), conflicts()],
+        SectionKind::AwaitingMyResponse => vec![unanswered(), failing(), conflicts()],
         SectionKind::MyApproved | SectionKind::Approved => vec![failing(), conflicts()],
         SectionKind::Snoozed => vec![need_you(), failing()],
         SectionKind::Category(_) => vec![failing(), conflicts(), unresolved()],
@@ -798,48 +794,8 @@ mod tests {
     }
 
     #[test]
-    fn pending_review_request_supersedes_that_reviewers_earlier_feedback() {
-        for state in [ReviewVerdict::Commented, ReviewVerdict::ChangesRequested] {
-            let mut pr = row(115, Category::Await);
-            pr.review_state = if state == ReviewVerdict::Commented {
-                ReviewState::Commented
-            } else {
-                ReviewState::Changes
-            };
-            pr.reviews = vec![review("aymeric-sorek-tbe", state)];
-            pr.requested = vec!["AYMERIC-SOREK-TBE".into()];
-            for mode in [Mode::Authored, Mode::AllOpen] {
-                assert_eq!(
-                    section_kind(mode, &pr),
-                    SectionKind::Category(Category::Await)
-                );
-                let mut unresolved = pr.clone();
-                unresolved.unresolved = 1;
-                assert_eq!(
-                    section_kind(mode, &unresolved),
-                    SectionKind::AwaitingMyResponse
-                );
-                let mut other_feedback = pr.clone();
-                other_feedback
-                    .reviews
-                    .push(review("another-reviewer", ReviewVerdict::Commented));
-                assert_eq!(
-                    section_kind(mode, &other_feedback),
-                    SectionKind::AwaitingMyResponse
-                );
-                let mut no_pending_request = pr.clone();
-                no_pending_request.requested.clear();
-                assert_eq!(
-                    section_kind(mode, &no_pending_request),
-                    SectionKind::AwaitingMyResponse
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn response_section_requires_authorship_and_unresolved_comments_or_unapproved_reviews() {
-        for mode in [Mode::Authored, Mode::AllOpen] {
+    fn response_section_uses_only_authorship_and_the_unanswered_count() {
+        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
             for category in [Category::Action, Category::Await, Category::Draft] {
                 for own in [false, true] {
                     for review_state in [
@@ -849,7 +805,7 @@ mod tests {
                         ReviewState::Changes,
                         ReviewState::Approved,
                     ] {
-                        for unresolved in [0, 2] {
+                        for unanswered in [None, Some(0), Some(1), Some(2)] {
                             let mut pr = row(1, category);
                             pr.is_own = own;
                             pr.review_state = review_state;
@@ -862,10 +818,14 @@ mod tests {
                                 }
                                 _ => Vec::new(),
                             };
-                            pr.unresolved = unresolved;
-                            assert_eq!(section_kind(mode, &pr) == SectionKind::AwaitingMyResponse,
-                                own && (unresolved > 0 || matches!(review_state, ReviewState::Commented | ReviewState::Changes)),
-                                "{mode:?} {category:?} own={own} {review_state:?} unresolved={unresolved}");
+                            pr.unresolved = 2;
+                            pr.unanswered = unanswered;
+                            for requested in [vec![], vec!["reviewer".into()]] {
+                                pr.requested = requested;
+                                assert_eq!(section_kind(mode, &pr) == SectionKind::AwaitingMyResponse,
+                                    own && unanswered.is_some_and(|count| count > 0),
+                                    "{mode:?} {category:?} own={own} {review_state:?} unanswered={unanswered:?}");
+                            }
                         }
                     }
                 }
@@ -874,9 +834,26 @@ mod tests {
     }
 
     #[test]
+    fn replying_to_all_threads_removes_the_pr_from_awaiting_my_response() {
+        let mut pr = row(15, Category::Action);
+        pr.unresolved = 2;
+        pr.unanswered = Some(1);
+        for mode in [Mode::Authored, Mode::AllOpen] {
+            assert_eq!(section_kind(mode, &pr), SectionKind::AwaitingMyResponse);
+            pr.unanswered = Some(0);
+            assert_eq!(
+                section_kind(mode, &pr),
+                SectionKind::Category(Category::Action)
+            );
+            pr.unanswered = Some(1);
+        }
+    }
+
+    #[test]
     fn response_section_has_its_own_header_members_summary_and_saved_key() {
         let mut response = row(1, Category::Action);
-        response.unresolved = 2;
+        response.unresolved = 5;
+        response.unanswered = Some(2);
         let rows = vec![row(2, Category::Await), response];
         let kind = SectionKind::AwaitingMyResponse;
         assert_eq!(collapsible_section("awaiting_my_response"), Some(kind));
@@ -898,7 +875,7 @@ mod tests {
         let now = "2026-10-28T12:00:00Z".parse().unwrap();
         assert!(section_summary(Mode::Authored, kind, [&rows[1]], now)
             .unwrap()
-            .contains("2 unresolved"));
+            .contains("2 unanswered"));
         let items = layout(
             &rows,
             Mode::Authored,
@@ -1307,6 +1284,7 @@ mod tests {
         // together where its longest-waiting member lands.
         let mut commented = row(10, Category::Await);
         commented.review_state = ReviewState::Commented;
+        commented.unanswered = Some(1);
         commented.reviews = vec![review("reviewer", ReviewVerdict::Commented)];
         let rows = vec![
             waiting(row(11, Category::Action), Some("2026-09-03T10:00:00Z")),
