@@ -98,6 +98,7 @@ impl TableWidthClass {
 const PR_W: f32 = 164.0;
 const CI_W: f32 = 68.0;
 const UNRESOLVED_W: f32 = 92.0;
+const UNANSWERED_W: f32 = 100.0;
 /// "+1.2k −340": two short counts side by side.
 const LINES_W: f32 = 104.0;
 /// An issue ID such as "ENG-1234".
@@ -448,6 +449,7 @@ pub enum ColumnKind {
     Review,
     Author,
     Unresolved,
+    Unanswered,
     /// Lines added and removed.
     Lines,
     Labels,
@@ -455,7 +457,7 @@ pub enum ColumnKind {
 }
 
 impl ColumnKind {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 14] = [
         Self::Pr,
         Self::Repo,
         Self::RepoOwner,
@@ -466,6 +468,7 @@ impl ColumnKind {
         Self::Review,
         Self::Author,
         Self::Unresolved,
+        Self::Unanswered,
         Self::Lines,
         Self::Labels,
         Self::Note,
@@ -484,6 +487,7 @@ impl ColumnKind {
             Self::Review => "review",
             Self::Author => "author",
             Self::Unresolved => "unresolved",
+            Self::Unanswered => "unanswered",
             Self::Lines => "lines",
             Self::Labels => "labels",
             Self::Note => "note",
@@ -503,6 +507,7 @@ impl ColumnKind {
             Self::Author => "Author",
             // Counts open review threads, not individual replies.
             Self::Unresolved => "Unresolved",
+            Self::Unanswered => "Unanswered",
             Self::Lines => "Lines",
             Self::Labels => "Labels",
             Self::Note => "Note",
@@ -586,6 +591,13 @@ pub fn columns_for(
     // the row action controls.
     let title_min = if all_repos { 120.0 } else { TITLE_MIN };
     let note_min = if all_repos { 224.0 } else { NOTE_MIN };
+    // Keep the narrow-window floors. The header menu can explicitly show
+    // Unanswered at any width, like the other optional metadata columns.
+    let show_unanswered =
+        viewport_width - fixed_sum - UNANSWERED_W - SCROLLBAR_MARGIN >= title_min + note_min;
+    if show_unanswered {
+        fixed_sum += UNANSWERED_W;
+    }
     // With an issue rule configured, the Ticket column shows on a wide window
     // that keeps Title and Note their minimums beside it.
     let show_ticket = ticket
@@ -630,6 +642,9 @@ pub fn columns_for(
                 col(ColumnKind::Review, review_w),
                 col(ColumnKind::Unresolved, UNRESOLVED_W),
             ]);
+            if show_unanswered {
+                cols.push(col(ColumnKind::Unanswered, UNANSWERED_W));
+            }
             if show_lines {
                 cols.push(col(ColumnKind::Lines, lines_w));
             }
@@ -653,6 +668,9 @@ pub fn columns_for(
                 col(ColumnKind::Author, author_w),
                 col(ColumnKind::Unresolved, UNRESOLVED_W),
             ]);
+            if show_unanswered {
+                cols.push(col(ColumnKind::Unanswered, UNANSWERED_W));
+            }
             if show_lines {
                 cols.push(col(ColumnKind::Lines, lines_w));
             }
@@ -675,6 +693,9 @@ pub fn columns_for(
                 col(ColumnKind::Author, author_w),
                 col(ColumnKind::Unresolved, UNRESOLVED_W),
             ]);
+            if show_unanswered {
+                cols.push(col(ColumnKind::Unanswered, UNANSWERED_W));
+            }
             if show_lines {
                 cols.push(col(ColumnKind::Lines, lines_w));
             }
@@ -1072,6 +1093,7 @@ impl BoardTableDelegate {
                         ColumnKind::Review => REVIEW_W,
                         ColumnKind::Author => AUTHOR_W,
                         ColumnKind::Unresolved => UNRESOLVED_W,
+                        ColumnKind::Unanswered => UNANSWERED_W,
                         ColumnKind::Lines => LINES_W,
                         ColumnKind::Labels => LABELS_W,
                         ColumnKind::Note => NOTE_MIN,
@@ -1655,6 +1677,23 @@ pub fn changed_marker_tooltip(changes: &[String]) -> SharedString {
     prmarmot_core::status::changed_marker_tooltip(changes).into()
 }
 
+/// Unknown and partial counts must not look like a confirmed green zero.
+fn unanswered_count(row: &BoardRow) -> (String, Tone) {
+    match row.unanswered {
+        None => ("—".into(), Tone::Muted),
+        Some(count) if row.unresolved_capped => (
+            format!("{count}+"),
+            if count > 0 {
+                Tone::Danger
+            } else {
+                Tone::Warning
+            },
+        ),
+        Some(0) => ("0".into(), Tone::Success),
+        Some(count) => (count.to_string(), Tone::Danger),
+    }
+}
+
 /// The theme colour for one of core's tones. Core decides *which* tone a cell
 /// has; each front end decides what that looks like.
 fn tone_color(tone: Tone, theme: &gpui_component::theme::Theme) -> Hsla {
@@ -2191,6 +2230,24 @@ impl BoardTableDelegate {
             .items_center()
             .child(status_dot(color))
             .child(div().text_color(color).child(count))
+            .into_any_element()
+    }
+
+    fn unanswered_cell(&self, at: usize, cx: &App) -> AnyElement {
+        let row = &self.rows[at];
+        let (count, tone) = unanswered_count(row);
+        let color = tone_color(tone, cx.theme());
+        h_flex()
+            .id(("unanswered", at))
+            .gap_1p5()
+            .items_center()
+            .child(status_dot(color))
+            .child(div().text_color(color).child(count))
+            .tooltip(|window, cx| {
+                Tooltip::new(
+                    "Unresolved review threads awaiting an answer from the PR author. An author reply or their 👍 on the latest comment answers it. A reviewer follow-up needs another answer. + means additional threads may exist; — means answer information is unavailable.",
+                ).build(window, cx)
+            })
             .into_any_element()
     }
 
@@ -3290,6 +3347,7 @@ impl TableDelegate for BoardTableDelegate {
             ColumnKind::Ticket => self.ticket_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Author => self.author_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Unresolved => self.unresolved_cell(at, row_ix, col_ix, window, cx),
+            ColumnKind::Unanswered => self.unanswered_cell(at, cx),
             ColumnKind::Lines => self.lines_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Review => self.review_column_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Title => self.title_cell(at, row_ix, col_ix, window, cx),
@@ -3415,6 +3473,39 @@ mod tests {
                 assert!(kinds.contains(&ColumnKind::RepoName));
             }
         }
+    }
+
+    #[test]
+    fn unanswered_column_can_be_shown_at_any_width_and_restored() {
+        let mut delegate = BoardTableDelegate::new(Mode::Authored, false);
+        delegate.restore_visible_columns(Some(&["unresolved".into(), "unanswered".into()]));
+        let saved = delegate.visible_column_keys();
+        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
+            let mut restored = BoardTableDelegate::new(mode, false);
+            restored.restore_visible_columns(Some(&saved));
+            for class in ALL_CLASSES {
+                let columns =
+                    restored.customize_columns(columns_for(mode, class, 900.0, false, false));
+                let keys: Vec<_> = columns.iter().map(|c| c.key.as_ref()).collect();
+                assert_eq!(keys, ["unresolved", "unanswered"]);
+            }
+            let wide = columns_for(mode, TableWidthClass::Wide, 1600.0, false, false);
+            assert_eq!(width_of(&wide, "unanswered"), Some(UNANSWERED_W));
+        }
+    }
+
+    #[test]
+    fn unanswered_counts_distinguish_zero_unknown_and_truncated_data() {
+        let mut row = row(1, Category::Action);
+        assert_eq!(unanswered_count(&row), ("—".into(), Tone::Muted));
+        row.unanswered = Some(0);
+        assert_eq!(unanswered_count(&row), ("0".into(), Tone::Success));
+        row.unresolved_capped = true;
+        assert_eq!(unanswered_count(&row), ("0+".into(), Tone::Warning));
+        row.unanswered = Some(2);
+        assert_eq!(unanswered_count(&row), ("2+".into(), Tone::Danger));
+        row.unresolved_capped = false;
+        assert_eq!(unanswered_count(&row), ("2".into(), Tone::Danger));
     }
 
     #[test]
@@ -4620,7 +4711,7 @@ mod tests {
             ]),
             [
                 Title, Pr, Repo, RepoOwner, RepoName, Ticket, Ci, Review, Author, Unresolved,
-                Lines, Labels, Note
+                Unanswered, Lines, Labels, Note
             ]
         );
         // Moving Title before PR among the shown columns moves only those.
@@ -4628,7 +4719,7 @@ mod tests {
             merged_order(&ColumnKind::ALL, &[Title, Pr, Ci, Note]),
             [
                 Title, Repo, RepoOwner, RepoName, Ticket, Pr, Ci, Review, Author, Unresolved,
-                Lines, Labels, Note
+                Unanswered, Lines, Labels, Note
             ]
         );
 
@@ -4730,11 +4821,10 @@ mod tests {
         let review = |w| width_of(&wide(w), "review").unwrap();
         let title = |w| width_of(&wide(w), "title").unwrap();
         let note = |w| width_of(&wide(w), "note").unwrap();
-        // At this width the extra Agents action and the Lines column leave
-        // Review 288px while Title retains its quantized share of the
-        // flexible space.
+        // Review retains 288px beside Lines and Unanswered while Title
+        // keeps its quantized share of the flexible space.
         assert_eq!(review(1780.0), 288.0);
-        assert_eq!(title(1780.0), 400.0);
+        assert_eq!(title(1780.0), 352.0);
         // At the narrowest wide window Lines takes the Note's spare room.
         assert_eq!(review(1360.0), REVIEW_W);
         assert!(review(1500.0) > REVIEW_W);
