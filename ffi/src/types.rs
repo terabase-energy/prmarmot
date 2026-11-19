@@ -614,6 +614,10 @@ pub struct PullRequest {
     pub reviews: Vec<Review>,
     pub my_review: Option<String>,
     pub unresolved_threads: u32,
+    /// Unresolved threads awaiting an author reply, or unknown.
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub unanswered_threads: Option<u32>,
     /// The files the unresolved threads are on, each once, newest first; at
     /// most 20.
     #[serde(default)]
@@ -724,6 +728,7 @@ impl PullRequest {
                 .collect(),
             my_review: row.my_review.as_ref().map(|r| r.as_str().to_owned()),
             unresolved_threads: row.unresolved as u32,
+            unanswered_threads: row.unanswered.map(|count| count as u32),
             unresolved_capped: row.unresolved_capped,
             replied_threads: row.replied() as u32,
             returned_threads: row.returned() as u32,
@@ -823,6 +828,7 @@ impl PullRequest {
                 .collect(),
             my_review: self.my_review.map(Into::into),
             unresolved: self.unresolved_threads as usize,
+            unanswered: self.unanswered_threads.map(|count| count as usize),
             unresolved_capped: self.unresolved_capped,
             turns: (self.replied_threads > 0 || self.returned_threads > 0).then_some(
                 core_board::Turns {
@@ -1371,4 +1377,24 @@ impl From<core_cells::ReviewCell> for ReviewCell {
 pub struct CiCell {
     pub text: String,
     pub tone: Tone,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unanswered_count_survives_the_ffi_round_trip_for_section_layout() {
+        let now = DateTime::from_timestamp(1_785_067_200, 0).unwrap();
+        for unanswered in [None, Some(0), Some(1), Some(2)] {
+            let row = core_board::BoardRow {
+                unresolved: 2,
+                unanswered,
+                ..Default::default()
+            };
+            let exported = PullRequest::from_row(&row, now, 7);
+            assert_eq!(exported.unanswered_threads, unanswered.map(|n| n as u32));
+            assert_eq!(exported.into_row().unanswered, unanswered);
+        }
+    }
 }

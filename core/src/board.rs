@@ -699,6 +699,11 @@ pub struct BoardRow {
     /// `NONE`; see [`standing_review`].
     pub my_review: Option<ReviewVerdict>,
     pub unresolved: usize,
+    /// Unresolved threads whose latest comment is not an author reply.
+    /// `None` when comment authors are unavailable (including old snapshots).
+    /// Like `unresolved`, this is a lower bound when `unresolved_capped`.
+    #[serde(default)]
+    pub unanswered: Option<usize>,
     /// The checks on the latest commit that failed, newest first, each with
     /// its run page when GitHub gave one. At most [`MAX_FAILED_CHECKS`], from
     /// the newest 30 contexts; empty when none failed or the token may not
@@ -776,6 +781,7 @@ impl Default for BoardRow {
             reviews: Vec::new(),
             my_review: None,
             unresolved: 0,
+            unanswered: None,
             failed_checks: Vec::new(),
             unresolved_paths: Vec::new(),
             unresolved_capped: false,
@@ -1453,6 +1459,22 @@ pub fn apply_turns(row: &mut BoardRow, turns: Turns, mode: Mode, me: &str, cfg: 
     }
 }
 
+/// Count threads awaiting an author reply, independently of the viewer.
+/// An author opening a thread has not answered it; a reviewer follow-up
+/// after an author reply makes the thread unanswered again.
+fn derive_unanswered(pr: &RawPr) -> Option<usize> {
+    let mut unanswered = 0;
+    for thread in pr.review_threads.nodes.iter().filter(|t| !t.is_resolved) {
+        let author = pr.author.as_ref()?.login.as_deref()?;
+        let comments = thread.comments.as_ref()?;
+        let latest = comments.nodes.last()?.author.as_ref()?.login.as_deref()?;
+        if comments.total_count < 2 || !latest.eq_ignore_ascii_case(author) {
+            unanswered += 1;
+        }
+    }
+    Some(unanswered)
+}
+
 fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -> BoardRow {
     let labels: Vec<String> = pr.labels.nodes.iter().map(|l| l.name.clone()).collect();
     let bug = labels.iter().any(|l| l == "bug");
@@ -1578,6 +1600,7 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         ),
         my_review: Some(my_latest_review(pr, me)),
         unresolved,
+        unanswered: derive_unanswered(pr),
         failed_checks: derive_failed_checks(pr),
         unresolved_paths: derive_unresolved_paths(pr),
         unresolved_capped,

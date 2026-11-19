@@ -170,6 +170,75 @@ fn derive_one(v: serde_json::Value, mode: Mode) -> BoardRow {
 }
 
 #[test]
+fn unanswered_counts_only_open_threads_awaiting_the_pr_author() {
+    let thread = |resolved, total, login| {
+        json!({
+            "isResolved": resolved,
+            "comments": {"totalCount": total, "nodes": [{"author": {"login": login}}]}
+        })
+    };
+    let mut v = base(15);
+    v["author"] = json!({"login": "someone-else"});
+    v["reviewThreads"] = json!({"totalCount": 6, "nodes": [
+        thread(true, 1, "reviewer"),
+        thread(false, 1, "reviewer"),
+        thread(false, 2, "someone-else"),
+        thread(false, 2, "SOMEONE-ELSE"),
+        // A follow-up from the reviewer needs another author reply.
+        thread(false, 3, "reviewer"),
+        // Opening a thread is not an author reply.
+        thread(false, 1, "someone-else"),
+    ]});
+    for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
+        let row = derive_one(v.clone(), mode);
+        assert_eq!(row.unresolved, 5);
+        assert_eq!(row.unanswered, Some(3), "{mode:?}");
+    }
+}
+
+#[test]
+fn unanswered_example_has_two_open_threads_but_both_are_answered() {
+    let mut v = base(15);
+    v["reviewThreads"] = json!({"totalCount": 3, "nodes": [
+        {"isResolved": true},
+        {"isResolved": false, "comments": {"totalCount": 2, "nodes": [{"author": {"login": "me"}}]}},
+        {"isResolved": false, "comments": {"totalCount": 2, "nodes": [{"author": {"login": "me"}}]}},
+    ]});
+    let row = derive_one(v.clone(), Mode::Authored);
+    assert_eq!(row.unresolved, 2);
+    assert_eq!(row.unanswered, Some(0));
+    assert!(row.blockers.contains(&Blocker::UnresolvedComments(2)));
+
+    v["reviewThreads"]["totalCount"] = json!(101);
+    let row = derive_one(v, Mode::Authored);
+    assert_eq!(row.unanswered, Some(0));
+    assert!(row.unresolved_capped);
+}
+
+#[test]
+fn unanswered_is_unknown_when_reply_data_is_missing() {
+    let mut v = base(15);
+    assert_eq!(derive_one(v.clone(), Mode::Authored).unanswered, Some(0));
+    for thread in [
+        json!({"isResolved": false}),
+        json!({"isResolved": false, "comments": {"totalCount": 1, "nodes": []}}),
+        json!({"isResolved": false, "comments": {"totalCount": 1, "nodes": [{"author": null}]}}),
+    ] {
+        v["reviewThreads"]["nodes"] = json!([thread]);
+        assert_eq!(derive_one(v.clone(), Mode::Authored).unanswered, None);
+    }
+    let row = derive_one(v, Mode::Authored);
+    let mut saved = serde_json::to_value(row).unwrap();
+    saved.as_object_mut().unwrap().remove("unanswered");
+    assert_eq!(
+        serde_json::from_value::<BoardRow>(saved)
+            .unwrap()
+            .unanswered,
+        None
+    );
+}
+
+#[test]
 fn a_token_refused_checks_and_teams_still_gets_its_board() {
     let refused = |path: serde_json::Value| {
         json!({"type": "FORBIDDEN", "path": path,
