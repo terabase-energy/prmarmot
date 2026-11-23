@@ -68,9 +68,9 @@ impl ThreadCacheTransport {
             .filter(|meta| meta.len() <= MAX_BYTES)
             .and_then(|_| std::fs::read(path).ok())
             .and_then(|bytes| serde_json::from_slice::<Cache>(&bytes).ok())
-            .filter(|cache| cache.version == 1 && cache.namespace == self.namespace)
+            .filter(|cache| cache.version == 2 && cache.namespace == self.namespace)
             .unwrap_or_else(|| Cache {
-                version: 1,
+                version: 2,
                 namespace: self.namespace.clone(),
                 entries: BTreeMap::new(),
             });
@@ -386,6 +386,32 @@ mod tests {
             *fake.0.lock().unwrap(),
             vec![vec!["A"], vec!["B"], vec!["A"], vec!["A"]]
         );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn comment_only_caches_are_refetched_for_reactions() {
+        let path = std::env::temp_dir().join(format!(
+            "prmarmot-thread-cache-reactions-test-{}.json",
+            std::process::id()
+        ));
+        let namespace = SnapshotNamespace::new("github.com", "one");
+        let old = Cache {
+            version: 1,
+            namespace: namespace.clone(),
+            entries: BTreeMap::from([(
+                "A".into(),
+                Entry {
+                    fetched_at: 100,
+                    node: json!({"id": "A", "reviewThreads": {"nodes": []}}),
+                },
+            )]),
+        };
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let fake = Arc::new(Fake(Mutex::new(vec![])));
+        let cache = ThreadCacheTransport::new(fake.clone(), namespace);
+        cache.cached(&[], &["A".into()], &path, 60, 110).unwrap();
+        assert_eq!(*fake.0.lock().unwrap(), vec![vec!["A"]]);
         std::fs::remove_file(path).unwrap();
     }
     /// Answers the tickets query: PRs whose id starts with `L` carry Linear's

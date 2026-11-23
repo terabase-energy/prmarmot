@@ -70,8 +70,9 @@ views with a plain-language **Note** on every row.
 - **Involving me** is the zero-config, all-repositories default. Your own PRs
   keep actionable Notes; other authors' PRs use ownership-aware status Notes:
   a teammate's PR with open threads nobody answered you on waits on its
-  author, and only the author replying to you makes it your turn. Only your
-  own drafts are listed; someone else's draft appears once it is marked ready.
+  author, and the author's reply or 👍 on your latest comment makes it your
+  turn. Only your own drafts are listed; someone else's draft appears once it
+  is marked ready.
   Selecting one repository changes this queue to **My PRs** with the existing
   authored behavior.
 - **Review queue** separates PRs that request your review from PRs with no
@@ -183,6 +184,17 @@ The **Unresolved** column shows open review-thread counts in every board view
 On PRs you authored, unresolved threads keep the PR in **Needs action**, even
 if you have replied or the PR is a draft. Resolving the threads removes that
 blocker; any remaining blockers still apply.
+
+The **Unanswered** column counts unresolved review threads awaiting an answer
+from the PR author. An author reply or the author's 👍 reaction on the latest
+comment from someone else answers a thread; a reviewer follow-up makes it
+unanswered again. Other people's reactions do not count. It shows `0` when
+all open threads are answered, `+` for a lower bound, and `—` when answer data
+is unavailable (including when the author's reaction could fall outside the
+latest 100 thumbs-up reactions).
+It appears automatically when space allows; right-click any column header to
+show it at other widths. Its visibility and order are saved with the other
+columns.
 
 The **Lines** column shows lines added (`+`, green) and removed (`−`, red),
 with the changed files on hover. It shows by default on wide windows (1360px
@@ -867,10 +879,12 @@ linked PRs. `--json` emits `prmarmot-cli/board@1`:
   comments stay under **Reviewed**, with a note that they wait on the author;
   an author's reply to your thread returns the PR to your attention.
   `awaiting_my_review` holds other authors’ remaining PRs; `await` holds your own
-  under **Awaiting their review**. `awaiting_my_response` holds your PRs with unresolved review comments
-  or unapproved review feedback from a reviewer whose review is not currently requested. These groups can be ordered and collapsed independently.
+  under **Awaiting their review**. `awaiting_my_response` holds your PRs whose
+  **Unanswered** count is greater than zero. Answered threads and review feedback
+  alone do not put a PR in that section. These groups can be ordered and collapsed independently.
 - **PRs:** each carries the facts behind the row: `category`, `ci`, `conflict`,
   `review_decision`, `requested_reviewers`, `reviews`, `my_review`,
+  `unanswered_threads` (unresolved threads awaiting an author reply; null when unknown),
   `unresolved_threads` (with `unresolved_threads_capped` when the PR has more
   threads than the newest 100 that were read, `replied_threads` for the ones
   you answered last, and `returned_threads` for the ones you opened on someone

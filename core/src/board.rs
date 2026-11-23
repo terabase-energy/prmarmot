@@ -21,7 +21,7 @@ use crate::github::query::{
     parse_tracked_response, pull_request_id_query, requested_ids, scope_repository_error,
     search_string, with_page_size, with_requested_ids, with_scope_repository, with_tracked_nodes,
     with_tracked_status_nodes, RawPr, ReviewNode, ReviewSearchResult, RollupContexts, StateCount,
-    PAGE_SIZE, PR_SEARCH_PAGE_QUERY, PR_SEARCH_QUERY, REVIEW_AVAILABLE_PAGE_QUERY,
+    ThreadNode, PAGE_SIZE, PR_SEARCH_PAGE_QUERY, PR_SEARCH_QUERY, REVIEW_AVAILABLE_PAGE_QUERY,
     REVIEW_AVAILABLE_QUERY, REVIEW_BOTH_PAGE_QUERY, REVIEW_REQUESTED_PAGE_QUERY,
     REVIEW_REQUESTED_QUERY, REVIEW_SEARCH_QUERY, SMALL_PAGE_SIZE, TRACKED_ONLY_QUERY,
     TRACKED_STATUS_QUERY,
@@ -614,8 +614,8 @@ impl Default for BoardConfig {
 /// rule (every unresolved thread is your move).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Turns {
-    /// Unresolved threads whose last comment is yours: your reply cleared
-    /// your turn on them; they wait on the reviewer.
+    /// Unresolved threads whose last comment is yours, or whose latest comment
+    /// you acknowledged with a thumbs-up as the PR author.
     pub replied: usize,
     /// Unresolved threads you opened whose last comment is someone else's:
     /// the author's reply returned them to you.
@@ -699,6 +699,13 @@ pub struct BoardRow {
     /// `NONE`; see [`standing_review`].
     pub my_review: Option<ReviewVerdict>,
     pub unresolved: usize,
+    /// Unresolved threads without an author reply or the author's thumbs-up
+    /// on the latest comment from someone else.
+    /// `None` when answer data is unavailable, pending the turns follow-up,
+    /// or the reaction window could have omitted the author's thumbs-up.
+    /// Like `unresolved`, this is a lower bound when `unresolved_capped`.
+    #[serde(default)]
+    pub unanswered: Option<usize>,
     /// The checks on the latest commit that failed, newest first, each with
     /// its run page when GitHub gave one. At most [`MAX_FAILED_CHECKS`], from
     /// the newest 30 contexts; empty when none failed or the token may not
@@ -776,6 +783,7 @@ impl Default for BoardRow {
             reviews: Vec::new(),
             my_review: None,
             unresolved: 0,
+            unanswered: None,
             failed_checks: Vec::new(),
             unresolved_paths: Vec::new(),
             unresolved_capped: false,
@@ -1304,12 +1312,12 @@ impl BoardRow {
     }
 
     /// The unresolved threads that are your move as the author: all of them
-    /// until [`Turns`] answered, then those whose last comment is not yours.
+    /// until [`Turns`] answered, then those you have not answered or acknowledged.
     pub fn awaiting_you(&self) -> usize {
         self.unresolved.saturating_sub(self.replied())
     }
 
-    /// Unresolved threads you answered last ([`Turns::replied`]).
+    /// Unresolved threads you answered or acknowledged last ([`Turns::replied`]).
     pub fn replied(&self) -> usize {
         self.turns.as_ref().map_or(0, |turns| turns.replied)
     }
@@ -1398,16 +1406,18 @@ fn returned_text(n: usize) -> String {
 /// PR with open threads (your reply may have cleared your turn), one you
 /// reviewed in the Review queue (the author's reply may have returned it),
 /// or someone else's in Involving me and All open (its open threads may be
-/// nobody's business of yours, or the author's answer to you).
+/// nobody's business of yours, or the author's answer to you). Unknown
+/// unanswered counts also need it to look up another author's reactions.
 pub fn wants_turns(row: &BoardRow, mode: Mode, me: &str) -> bool {
     row.turns.is_none()
         && row.unresolved > 0
-        && match mode {
-            Mode::Authored | Mode::AllOpen => {
-                row.author.as_deref() == Some(me) || is_someone_elses(row)
-            }
-            Mode::Review => row.category == Category::Done,
-        }
+        && (row.unanswered.is_none()
+            || match mode {
+                Mode::Authored | Mode::AllOpen => {
+                    row.author.as_deref() == Some(me) || is_someone_elses(row)
+                }
+                Mode::Review => row.category == Category::Done,
+            })
 }
 
 /// Your own PRs ask before anyone else's: the request is bounded, and your
@@ -1451,6 +1461,28 @@ pub fn apply_turns(row: &mut BoardRow, turns: Turns, mode: Mode, me: &str, cfg: 
         }
         _ => {}
     }
+}
+
+/// Count threads awaiting an author answer, independently of the viewer.
+/// An author opening a thread has not answered it; a reviewer follow-up
+/// after an author reply or thumbs-up makes the thread unanswered again.
+fn derive_unanswered(author: Option<&str>, threads: &[ThreadNode], viewer: &str) -> Option<usize> {
+    let mut unanswered = 0;
+    for thread in threads.iter().filter(|t| !t.is_resolved) {
+        let author = author?;
+        let comments = thread.comments.as_ref()?;
+        let comment = comments.nodes.last()?;
+        let latest = comment.author.as_ref()?.login.as_deref()?;
+        let answered = if latest.eq_ignore_ascii_case(author) {
+            comments.total_count >= 2
+        } else {
+            comment.acknowledged_by(author, viewer)?
+        };
+        if !answered {
+            unanswered += 1;
+        }
+    }
+    Some(unanswered)
 }
 
 fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -> BoardRow {
@@ -1578,6 +1610,11 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         ),
         my_review: Some(my_latest_review(pr, me)),
         unresolved,
+        unanswered: derive_unanswered(
+            pr.author.as_ref().and_then(|a| a.login.as_deref()),
+            &pr.review_threads.nodes,
+            me,
+        ),
         failed_checks: derive_failed_checks(pr),
         unresolved_paths: derive_unresolved_paths(pr),
         unresolved_capped,

@@ -170,6 +170,168 @@ fn derive_one(v: serde_json::Value, mode: Mode) -> BoardRow {
 }
 
 #[test]
+fn unanswered_counts_only_open_threads_awaiting_the_pr_author() {
+    let thread = |resolved, total, login| {
+        json!({
+            "isResolved": resolved,
+            "comments": {"totalCount": total, "nodes": [{"author": {"login": login}}]}
+        })
+    };
+    let mut v = base(15);
+    v["author"] = json!({"login": "someone-else"});
+    v["reviewThreads"] = json!({"totalCount": 6, "nodes": [
+        thread(true, 1, "reviewer"),
+        thread(false, 1, "reviewer"),
+        thread(false, 2, "someone-else"),
+        thread(false, 2, "SOMEONE-ELSE"),
+        // A follow-up from the reviewer needs another author reply.
+        thread(false, 3, "reviewer"),
+        // Opening a thread is not an author reply.
+        thread(false, 1, "someone-else"),
+    ]});
+    for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
+        let row = derive_one(v.clone(), mode);
+        assert_eq!(row.unresolved, 5);
+        assert_eq!(row.unanswered, Some(3), "{mode:?}");
+    }
+}
+
+#[test]
+fn unanswered_example_has_two_open_threads_but_both_are_answered() {
+    let mut v = base(15);
+    v["reviewThreads"] = json!({"totalCount": 3, "nodes": [
+        {"isResolved": true},
+        {"isResolved": false, "comments": {"totalCount": 2, "nodes": [{"author": {"login": "me"}}]}},
+        {"isResolved": false, "comments": {"totalCount": 2, "nodes": [{"author": {"login": "me"}}]}},
+    ]});
+    let row = derive_one(v.clone(), Mode::Authored);
+    assert_eq!(row.unresolved, 2);
+    assert_eq!(row.unanswered, Some(0));
+    assert!(row.blockers.contains(&Blocker::UnresolvedComments(2)));
+
+    v["reviewThreads"]["totalCount"] = json!(101);
+    let row = derive_one(v, Mode::Authored);
+    assert_eq!(row.unanswered, Some(0));
+    assert!(row.unresolved_capped);
+}
+
+fn reacted_thread(latest: &str, reacted_by: Option<&str>) -> serde_json::Value {
+    let reactions = reacted_by
+        .map(|login| {
+            json!({
+                "user": {"login": login}, "createdAt": "2026-11-23T10:00:00Z"
+            })
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
+    json!({
+        "isResolved": false,
+        "comments": {"totalCount": 1, "nodes": [{
+            "author": {"login": latest},
+            "thumbsUp": {"totalCount": reactions.len(), "nodes": reactions}
+        }]}
+    })
+}
+
+#[test]
+fn the_pr_authors_thumbs_up_answers_the_latest_comment_in_every_view() {
+    // Deliberately not the viewer: authorship, rather than viewerHasReacted,
+    // decides whether the thread is answered.
+    let mut v = base(15);
+    v["author"] = json!({"login": "alice"});
+    v["reviewThreads"] = json!({"totalCount": 5, "nodes": [
+        reacted_thread("reviewer", Some("ALICE")),
+        reacted_thread("reviewer", Some("someone-else")),
+        reacted_thread("reviewer", None),
+        // The author's self-reaction on an opening comment is not an answer.
+        reacted_thread("alice", Some("alice")),
+        {"isResolved": true},
+    ]});
+    for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
+        let row = derive_one(v.clone(), mode);
+        assert_eq!(row.unanswered, Some(3), "{mode:?}");
+        assert_eq!(row.unresolved, 4, "{mode:?}");
+    }
+}
+
+#[test]
+fn removing_the_authors_thumbs_up_or_following_up_needs_another_answer() {
+    let mut v = base(15);
+    let mut thread = reacted_thread("reviewer", Some("me"));
+    v["reviewThreads"] = json!({"totalCount": 1, "nodes": [thread.clone()]});
+    let row = derive_one(v.clone(), Mode::Authored);
+    assert_eq!(row.unanswered, Some(0));
+    assert_eq!(row.unresolved, 1);
+    assert!(row.blockers.contains(&Blocker::UnresolvedComments(1)));
+
+    // A new latest comment has no acknowledgement even though the older one
+    // still does. The query reads reactions on only the latest comment.
+    thread["comments"] = json!({"totalCount": 2, "nodes": [
+        {"author": {"login": "reviewer"}, "thumbsUp": {"totalCount": 0, "nodes": []}}
+    ]});
+    v["reviewThreads"]["nodes"] = json!([thread]);
+    assert_eq!(derive_one(v.clone(), Mode::Authored).unanswered, Some(1));
+
+    v["reviewThreads"]["nodes"] = json!([reacted_thread("reviewer", None)]);
+    assert_eq!(derive_one(v, Mode::Authored).unanswered, Some(1));
+}
+
+#[test]
+fn a_capped_reaction_window_is_unknown_unless_the_author_is_present() {
+    let mut v = base(15);
+    let mut thread = reacted_thread("reviewer", Some("someone-else"));
+    thread["comments"]["nodes"][0]["thumbsUp"]["totalCount"] = json!(101);
+    v["reviewThreads"] = json!({"totalCount": 1, "nodes": [thread]});
+    assert_eq!(derive_one(v.clone(), Mode::Authored).unanswered, None);
+    v["reviewThreads"]["nodes"][0]["comments"]["nodes"][0]["thumbsUp"]["nodes"] = json!([
+        null, {"user": null}, {"user": {"login": "ME"}}
+    ]);
+    assert_eq!(derive_one(v, Mode::Authored).unanswered, Some(0));
+}
+
+#[test]
+fn the_viewer_flag_answers_own_prs_without_loading_reaction_users() {
+    let mut v = base(15);
+    v["reviewThreads"] = json!({"totalCount": 1, "nodes": [{
+        "isResolved": false,
+        "comments": {"totalCount": 1, "nodes": [{
+            "author": {"login": "reviewer"},
+            "thumbsUp": {"totalCount": 101, "viewerHasReacted": true}
+        }]}
+    }]});
+    assert_eq!(derive_one(v.clone(), Mode::Authored).unanswered, Some(0));
+    v["reviewThreads"]["nodes"][0]["comments"]["nodes"][0]["thumbsUp"]["viewerHasReacted"] =
+        json!(false);
+    assert_eq!(derive_one(v.clone(), Mode::Authored).unanswered, Some(1));
+    // Other authors need reaction users from the follow-up.
+    v["author"] = json!({"login": "alice"});
+    assert_eq!(derive_one(v, Mode::Review).unanswered, None);
+}
+
+#[test]
+fn unanswered_is_unknown_when_reply_data_is_missing() {
+    let mut v = base(15);
+    assert_eq!(derive_one(v.clone(), Mode::Authored).unanswered, Some(0));
+    for thread in [
+        json!({"isResolved": false}),
+        json!({"isResolved": false, "comments": {"totalCount": 1, "nodes": []}}),
+        json!({"isResolved": false, "comments": {"totalCount": 1, "nodes": [{"author": null}]}}),
+    ] {
+        v["reviewThreads"]["nodes"] = json!([thread]);
+        assert_eq!(derive_one(v.clone(), Mode::Authored).unanswered, None);
+    }
+    let row = derive_one(v, Mode::Authored);
+    let mut saved = serde_json::to_value(row).unwrap();
+    saved.as_object_mut().unwrap().remove("unanswered");
+    assert_eq!(
+        serde_json::from_value::<BoardRow>(saved)
+            .unwrap()
+            .unanswered,
+        None
+    );
+}
+
+#[test]
 fn a_token_refused_checks_and_teams_still_gets_its_board() {
     let refused = |path: serde_json::Value| {
         json!({"type": "FORBIDDEN", "path": path,
@@ -4155,6 +4317,103 @@ fn someone_elses_open_threads_wait_on_its_author_unless_they_answered_you() {
     apply_turns(&mut all_open, nobodys, Mode::AllOpen, "me", &cfg());
     assert_eq!(all_open.category, Category::Await, "{}", all_open.note);
     assert_eq!(all_open.note, "3 unresolved comments — waits on its author");
+}
+
+#[test]
+fn the_authors_thumbs_up_clears_their_turn_and_returns_the_reviewers_turn() {
+    let mut node = json!({"author": {"login": "alice"}, "reviewThreads": {"nodes": [{
+        "isResolved": false,
+        "opened": {"nodes": [{"author": {"login": "me"}}]},
+        "latest": {"totalCount": 1, "nodes": [{
+            "author": {"login": "me"}, "createdAt": "2026-11-22T10:00:00Z",
+            "thumbsUp": {"totalCount": 1, "nodes": [{
+                "user": {"login": "ALICE"}, "createdAt": "2026-11-23T10:00:00Z"
+            }]}
+        }]}
+    }]}});
+    assert_eq!(
+        fetch::turns_of(&node, "alice"),
+        Turns {
+            replied: 1,
+            returned: 0,
+            returned_at: None,
+        }
+    );
+    let reviewer_turns = fetch::turns_of(&node, "me");
+    assert_eq!(
+        reviewer_turns,
+        Turns {
+            replied: 0,
+            returned: 1,
+            returned_at: Some("2026-11-23T10:00:00Z".into()),
+        }
+    );
+    let mut v = own_pr_with_threads(3, 1);
+    v["author"] = json!({"login": "alice"});
+    v["reviews"] = json!({"nodes": [{
+        "author": {"login": "me"}, "state": "COMMENTED"
+    }]});
+    let mut row = derive_one(v, Mode::Review);
+    assert_eq!(row.category, Category::Done);
+    apply_turns(&mut row, reviewer_turns, Mode::Review, "me", &cfg());
+    assert_eq!(row.category, Category::Todo);
+    assert_eq!(row.waiting_since.as_deref(), Some("2026-11-23T10:00:00Z"));
+
+    let mut board_pr = own_pr_with_threads(3, 1);
+    board_pr["author"] = json!({"login": "alice"});
+    board_pr["reviewThreads"]["nodes"][0] = json!({
+        "isResolved": false, "comments": {"totalCount": 1, "nodes": [{
+            "author": {"login": "me"},
+            "thumbsUp": {"totalCount": 1, "viewerHasReacted": false}
+        }]}
+    });
+    node["id"] = json!("PR_3");
+    struct ReactionTransport(SequenceTransport);
+    impl GithubTransport for ReactionTransport {
+        fn graphql(
+            &self,
+            query: &str,
+            variables: &[(&str, &str)],
+        ) -> Result<serde_json::Value, GhError> {
+            self.0.graphql(query, variables)
+        }
+        fn graphql_with_ids(
+            &self,
+            query: &str,
+            variables: &[(&str, &str)],
+            ids: &[String],
+        ) -> Result<serde_json::Value, GhError> {
+            if query == crate::github::query::TURNS_QUERY {
+                assert_eq!(ids, &["PR_3"]);
+            }
+            self.graphql(query, variables)
+        }
+    }
+    let transport = ReactionTransport(SequenceTransport::new(vec![
+        Ok(json!({"data": {"search": {"pageInfo": {"hasNextPage": false}, "nodes": [board_pr]}}})),
+        Ok(json!({"data": {"turns": [node.clone()]}})),
+    ]));
+    let fetched = fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
+    assert_eq!(
+        fetched.rows[0].unanswered,
+        Some(0),
+        "the follow-up refines the unknown board count"
+    );
+    assert_eq!(fetched.rows[0].returned(), 1);
+
+    node["reviewThreads"]["nodes"][0]["latest"]["nodes"][0]["thumbsUp"]["nodes"][0]["user"]
+        ["login"] = json!("someone-else");
+    assert_eq!(fetch::turns_of(&node, "alice").replied, 0);
+    assert_eq!(fetch::turns_of(&node, "me").returned, 0);
+    // A follow-up replaces the latest comment; reactions on older comments
+    // no longer return the review to its opener.
+    node["reviewThreads"]["nodes"][0]["latest"]["nodes"] = json!([
+        {"author": {"login": "me"}, "createdAt": "2026-11-23T11:00:00Z"}
+    ]);
+    assert_eq!(fetch::turns_of(&node, "alice").replied, 0);
+    assert_eq!(fetch::turns_of(&node, "me").returned, 0);
+    node["reviewThreads"]["nodes"][0]["isResolved"] = json!(true);
+    assert_eq!(fetch::turns_of(&node, "alice"), Turns::default());
 }
 
 #[test]

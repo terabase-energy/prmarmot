@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::github::query::{
-    check_graphql_errors, parse_rate, MAX_TURN_IDS, TICKETS_QUERY, TURNS_QUERY,
+    check_graphql_errors, parse_rate, ThreadComment, MAX_TURN_IDS, TICKETS_QUERY, TURNS_QUERY,
 };
 
 /// One request, sent again unchanged when GitHub gave up on it at
@@ -274,6 +274,20 @@ fn settle_turns(
         };
         let turns = turns_of(node, me);
         if let Some(row) = fetched.rows.iter_mut().find(|row| row.id == id) {
+            // The board's cheap viewer flag answers your own PRs immediately.
+            // Reaction users in this follow-up can answer anyone else's too.
+            if let Some(author) = node
+                .pointer("/author/login")
+                .and_then(serde_json::Value::as_str)
+                .filter(|_| row.unanswered.is_none())
+            {
+                if let Some(threads) = node.get("reviewThreads").and_then(|value| {
+                    serde_json::from_value::<crate::github::query::Nodes<ThreadNode>>(value.clone())
+                        .ok()
+                }) {
+                    row.unanswered = derive_unanswered(Some(author), &threads.nodes, me);
+                }
+            }
             apply_turns(row, turns, mode, me, cfg);
         }
     }
@@ -287,18 +301,15 @@ fn settle_turns(
 /// Count a PR's unresolved threads by who spoke last: yours when your
 /// comment is the latest, returned when you opened the thread and someone
 /// else answered last — and when the newest of those answers was made.
+/// A PR author's thumbs-up on the latest comment acts as their answer.
 pub(crate) fn turns_of(node: &serde_json::Value, me: &str) -> Turns {
+    let pr_author = node
+        .pointer("/author/login")
+        .and_then(serde_json::Value::as_str);
     let author = |thread: &serde_json::Value, edge: &str| -> Option<String> {
         thread
             .pointer(&format!("/{edge}/nodes/0/author/login"))
             .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-    };
-    let answered_at = |thread: &serde_json::Value| -> Option<String> {
-        thread
-            .pointer("/latest/nodes/0/createdAt")
-            .and_then(serde_json::Value::as_str)
-            .filter(|at| !at.is_empty())
             .map(str::to_owned)
     };
     let mut turns = Turns::default();
@@ -315,13 +326,32 @@ pub(crate) fn turns_of(node: &serde_json::Value, me: &str) -> Turns {
         {
             continue;
         }
-        let latest = author(thread, "latest");
+        let mut latest = author(thread, "latest");
+        let comment = thread
+            .pointer("/latest/nodes/0")
+            .and_then(|value| serde_json::from_value::<ThreadComment>(value.clone()).ok());
+        let reaction = pr_author
+            .filter(|pr_author| {
+                latest
+                    .as_deref()
+                    .is_some_and(|latest| !latest.eq_ignore_ascii_case(pr_author))
+            })
+            .and_then(|pr_author| comment.as_ref()?.thumbs_up_by(pr_author));
+        if reaction.is_some() {
+            latest = pr_author.map(str::to_owned);
+        }
+        let answered_at = reaction
+            .and_then(|reaction| reaction.created_at.clone())
+            .or_else(|| comment.as_ref()?.created_at.clone());
         let opened = author(thread, "opened");
-        if latest.as_deref() == Some(me) {
+        if latest
+            .as_deref()
+            .is_some_and(|latest| latest.eq_ignore_ascii_case(me))
+        {
             turns.replied += 1;
         } else if opened.as_deref() == Some(me) && latest.is_some() {
             turns.returned += 1;
-            if let Some(at) = answered_at(thread) {
+            if let Some(at) = answered_at.filter(|at| !at.is_empty()) {
                 if turns
                     .returned_at
                     .as_deref()

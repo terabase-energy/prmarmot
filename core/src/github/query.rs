@@ -116,7 +116,7 @@ macro_rules! pr_fields {
   latestReview: reviews(last:1, author:$who, states:[APPROVED,COMMENTED,CHANGES_REQUESTED,DISMISSED]){ nodes{ state submittedAt commit{oid} } }
   reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug members(first:100, query:$who){ nodes{login} }} } } }
   reviews(last:60){ nodes{ author{ __typename login } state submittedAt } }
-  reviewThreads(last:100){ totalCount nodes{ isResolved isOutdated path } }
+  reviewThreads(last:100){ totalCount nodes{ isResolved isOutdated path comments(last:1){ totalCount nodes{ author{ login } thumbsUp: reactions(content:THUMBS_UP){ totalCount viewerHasReacted } } } } }
   commits(last:1){ nodes{ commit{ statusCheckRollup{ state contexts(first:30){ checkRunCountsByState{ state count } statusContextCountsByState{ state count } nodes{ __typename ... on CheckRun{ name conclusion detailsUrl } ... on StatusContext{ context state targetUrl } } } } } } }
   history: commits(last:20){ totalCount nodes{ commit{ oid } } }
   timelineItems(last:10, itemTypes:[REVIEW_REQUESTED_EVENT, READY_FOR_REVIEW_EVENT]){ nodes{ __typename ... on ReviewRequestedEvent{ createdAt requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } ... on ReadyForReviewEvent{ createdAt } } }"#
@@ -333,11 +333,13 @@ pub const TRACKED_STATUS_QUERY: &str = "query($tracked:[ID!]!){\n  rateLimit { l
 /// measured 2026-10-02), so this is a second, bounded request for only the
 /// rows the rule can move — at most [`MAX_TURN_IDS`] — at 2 points a PR and
 /// under a second for eleven (measured 2026-10-07; Oliver's ruling the same
-/// day: try it). Any transport's batched-id variable is `$tracked`.
-pub const TURNS_QUERY: &str = "query($tracked:[ID!]!){\n  rateLimit { limit cost remaining resetAt }\n  turns: nodes(ids:$tracked){ ... on PullRequest { id reviewThreads(last:100){ nodes{ isResolved opened: comments(first:1){ nodes{ author{ login } } } latest: comments(last:1){ nodes{ author{ login } createdAt } } } } } }\n}";
+/// day: try it). The latest comment's thumbs-up users add one point per PR
+/// (3 total, measured 2026-11-23), so they are read here rather than under
+/// every board search row. Any transport's batched-id variable is `$tracked`.
+pub const TURNS_QUERY: &str = "query($tracked:[ID!]!){\n  rateLimit { limit cost remaining resetAt }\n  turns: nodes(ids:$tracked){ ... on PullRequest { id author{ login } reviewThreads(last:100){ nodes{ isResolved opened: comments(first:1){ nodes{ author{ login } } } latest: comments(last:1){ totalCount nodes{ author{ login } createdAt thumbsUp: reactions(last:100, content:THUMBS_UP){ totalCount viewerHasReacted nodes{ user{ login } createdAt } } } } } } } }\n}";
 
-/// The most PRs one turns request asks about: 60 points at the measured
-/// 2 a PR, against a 5,000-point hour.
+/// The most PRs one turns request asks about: 90 points at the measured
+/// 3 a PR, against a 5,000-point hour.
 pub const MAX_TURN_IDS: usize = 30;
 
 /// The first comments of the given PRs, where Linear's GitHub integration
@@ -596,6 +598,74 @@ pub struct ThreadNode {
     /// The file the thread is on. Absent from prototype fixtures.
     #[serde(default)]
     pub path: Option<String>,
+    /// The latest comment and total comment count; absent in older fixtures.
+    #[serde(default, alias = "latest")]
+    pub comments: Option<Nodes<ThreadComment>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadComment {
+    pub author: Option<Login>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// Only thumbs-up reactions, on the latest comment. The board reads the
+    /// viewer flag; only the bounded turns follow-up reads reaction users.
+    #[serde(default)]
+    pub thumbs_up: Option<ThumbsUpReactions>,
+}
+
+impl ThreadComment {
+    pub fn thumbs_up_by(&self, login: &str) -> Option<&ThumbsUpReaction> {
+        self.thumbs_up
+            .as_ref()?
+            .nodes
+            .iter()
+            .flatten()
+            .find(|reaction| {
+                reaction
+                    .user
+                    .as_ref()
+                    .and_then(|user| user.login.as_deref())
+                    .is_some_and(|user| user.eq_ignore_ascii_case(login))
+            })
+    }
+
+    /// Unknown if the bounded window could have omitted this user's reaction.
+    /// Older snapshots without reactions retain their comment-only behavior.
+    pub fn acknowledged_by(&self, login: &str, viewer: &str) -> Option<bool> {
+        if login.eq_ignore_ascii_case(viewer) {
+            if let Some(reacted) = self.thumbs_up.as_ref().and_then(|r| r.viewer_has_reacted) {
+                return Some(reacted);
+            }
+        }
+        if self.thumbs_up_by(login).is_some() {
+            return Some(true);
+        }
+        match &self.thumbs_up {
+            Some(reactions) if reactions.total_count > reactions.nodes.len() => None,
+            _ => Some(false),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThumbsUpReactions {
+    #[serde(default)]
+    pub total_count: usize,
+    #[serde(default)]
+    pub viewer_has_reacted: Option<bool>,
+    #[serde(default)]
+    pub nodes: Vec<Option<ThumbsUpReaction>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThumbsUpReaction {
+    pub user: Option<Login>,
+    #[serde(default)]
+    pub created_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

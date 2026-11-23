@@ -223,6 +223,11 @@
           "description": "Your own standing review, by the same rule as `reviews`; NONE when you haven't reviewed."
         },
         "unresolved_threads": { "type": "integer", "minimum": 0 },
+        "unanswered_threads": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Unresolved threads awaiting an author reply, or null when reply data is unavailable. A positive count on your own PR places it in awaiting_my_response. The count may be low when unresolved_threads_capped is true."
+        },
         "unresolved_threads_capped": {
           "type": "boolean",
           "description": "The PR has more review threads than the newest 100 that were read, so unresolved_threads counts only those and may be low."
