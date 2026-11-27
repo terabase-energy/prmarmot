@@ -56,6 +56,9 @@ pub struct SettingsUpdate {
     pub default_model: Option<String>,
     pub default_prompt: Option<String>,
     pub default_agent_permissions: Option<String>,
+    pub terminal_app: Option<String>,
+    pub terminal_agent: Option<String>,
+    pub terminal_skill: Option<String>,
     pub theme: Option<String>,
     /// `Some(None)` removes `[issue_link]`; `None` preserves it.
     pub issue_link: Option<Option<(String, String)>>,
@@ -157,6 +160,9 @@ fn apply_settings(doc: &mut toml_edit::DocumentMut, update: &SettingsUpdate) -> 
             "default_agent_permissions",
             &update.default_agent_permissions,
         ),
+        ("terminal_app", &update.terminal_app),
+        ("terminal_agent", &update.terminal_agent),
+        ("terminal_skill", &update.terminal_skill),
     ] {
         if let Some(value) = value {
             if value.trim().is_empty() {
@@ -698,6 +704,9 @@ mod tests {
                 default_model: Some(" exact-model ".into()),
                 default_prompt: Some(" /code-review ".into()),
                 default_agent_permissions: Some(" full-access ".into()),
+                terminal_app: Some(" iTerm ".into()),
+                terminal_agent: Some("claude".into()),
+                terminal_skill: Some(" code-review ".into()),
                 ..Default::default()
             },
         )
@@ -710,14 +719,19 @@ mod tests {
             config.default_agent_permissions.as_deref(),
             Some("full-access")
         );
+        assert_eq!(config.terminal_app.as_deref(), Some("iTerm"));
+        assert_eq!(config.terminal_agent.as_deref(), Some("claude"));
+        assert_eq!(config.terminal_skill.as_deref(), Some("code-review"));
         apply_settings(&mut doc, &SettingsUpdate::default()).unwrap();
         assert_eq!(doc["default_model"].as_str(), Some("exact-model"));
+        assert_eq!(doc["terminal_skill"].as_str(), Some("code-review"));
         apply_settings(
             &mut doc,
             &SettingsUpdate {
                 default_model: Some(String::new()),
                 default_prompt: Some("  ".into()),
                 default_agent_permissions: Some(String::new()),
+                terminal_app: Some(" ".into()),
                 ..Default::default()
             },
         )
@@ -725,6 +739,7 @@ mod tests {
         assert!(!doc.contains_key("default_model"));
         assert!(!doc.contains_key("default_prompt"));
         assert!(!doc.contains_key("default_agent_permissions"));
+        assert!(!doc.contains_key("terminal_app"));
         assert_eq!(doc["repo"].as_str(), Some("acme/widget"));
         assert!(doc.to_string().contains("# keep this"));
     }

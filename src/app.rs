@@ -2075,7 +2075,12 @@ impl RootView {
                 self.show_feedback("Copied to clipboard", cx);
             }
             RowAction::OpenVscode => self.open_pr_vscode(row, cx),
-            RowAction::ReviewVscode => self.open_pr_editor(row, true, cx),
+            RowAction::ReviewVscode => {
+                self.open_pr_editor(row, details::EditorTarget::VscodeAgents, cx)
+            }
+            RowAction::AgentTerminal => {
+                self.open_pr_editor(row, details::EditorTarget::Terminal, cx)
+            }
             RowAction::Watch => self.watch_row(&row, cx),
             RowAction::Snooze => self.snooze_row(row, window, cx),
             RowAction::CancelSnooze => self

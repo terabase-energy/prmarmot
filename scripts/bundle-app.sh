@@ -120,6 +120,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<string>public.app-category.developer-tools</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>PR Marmot opens a terminal tab that runs your agent CLI on a pull request.</string>
 	<key>CFBundleIconFile</key>
 	<string>prmarmot</string>
 </dict>

@@ -2,14 +2,30 @@
 
 use super::*;
 
+/// Where a PR checkout opens.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum EditorTarget {
+    /// A VS Code window on the PR worktree.
+    Vscode,
+    /// A VS Code Agents review session.
+    VscodeAgents,
+    /// A terminal tab on the PR worktree that runs an agent CLI with a skill.
+    Terminal,
+}
+
 impl RootView {
     pub(super) fn open_pr_vscode(&mut self, row: BoardRow, cx: &mut Context<Self>) {
-        self.open_pr_editor(row, false, cx);
+        self.open_pr_editor(row, EditorTarget::Vscode, cx);
     }
 
-    pub(super) fn open_pr_editor(&mut self, row: BoardRow, review: bool, cx: &mut Context<Self>) {
+    pub(super) fn open_pr_editor(
+        &mut self,
+        row: BoardRow,
+        target: EditorTarget,
+        cx: &mut Context<Self>,
+    ) {
         if self.opening_vscode {
-            self.show_feedback_owned("A VS Code launch is already in progress…".into(), cx);
+            self.show_feedback_owned("An open is already in progress…".into(), cx);
             return;
         }
         let Some(repository) = row
@@ -48,7 +64,29 @@ impl RootView {
                         return Err("Set Repositories folders in Settings first".into());
                     }
                     let cache = prmarmot_local::config::cache_root().join("worktrees.json");
-                    if review {
+                    if target == EditorTarget::Terminal {
+                        // Check the settings before a worktree is made.
+                        let terminal = prmarmot_local::terminal::Terminal::parse(
+                            config.terminal_app.as_deref().unwrap_or_default(),
+                        )?;
+                        let skill = config.terminal_skill.as_deref().unwrap_or_default();
+                        let command = prmarmot_local::terminal::agent_command(
+                            config.terminal_agent.as_deref().unwrap_or_default(),
+                            skill,
+                            &pr_url,
+                        )?;
+                        let path = prmarmot_local::worktrees::resolve(&roots, &cache, &request)?;
+                        prmarmot_local::terminal::open(&terminal, &path, &command)?;
+                        let what = match prmarmot_local::terminal::skill_name(skill)? {
+                            Some(skill) => skill.to_owned(),
+                            None => "the agent".to_owned(),
+                        };
+                        Ok(format!(
+                            "Started {what} in {} at {}",
+                            terminal.name(),
+                            path.display()
+                        ))
+                    } else if target == EditorTarget::VscodeAgents {
                         let agent = prmarmot_local::vscode_agents::ReviewAgent::connect(
                             config.default_harness.as_deref().unwrap_or_default(),
                             config.default_model.as_deref().unwrap_or_default(),

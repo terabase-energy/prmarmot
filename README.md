@@ -307,6 +307,40 @@ tokens are never saved or passed on the command line. On launch/send failure,
 the error includes recovery information; prompts are not automatically retried.
 Authentication and approvals remain managed by VS Code.
 
+### Run an agent skill in a terminal
+
+Click the **terminal icon** at the right of the Blobby button in a PR row. PR Marmot
+prepares the same worktree as **Open in VS Code**, so the checkout is at the PR
+head. Then it opens a new terminal tab in that folder and starts your agent CLI
+with a skill on the PR URL. Example: a new iTerm tab that runs
+`claude '/code-review https://github.com/owner/repo/pull/42'`. With no skill set,
+the agent starts in the checkout and waits for your input.
+
+Set three values in Settings → Advanced (also in `config.toml`):
+
+| Setting | Key | Values |
+| --- | --- | --- |
+| Terminal | `terminal_app` | `iTerm` (new tab), `Terminal` (new window; a new tab needs Accessibility access), or a shell command that contains `{command}` and optionally `{dir}`. Blank is `Terminal`. |
+| Terminal agent | `terminal_agent` | The agent command, with flags if necessary. Blank is `claude`. |
+| Terminal skill | `terminal_skill` | The skill name, for example `code-review`. Blank starts the agent with no prompt. |
+
+Claude Code gets `/skill <PR URL>`; Codex gets `$skill <PR URL>`
+([Codex skills](https://learn.chatgpt.com/docs/build-skills)). The session is
+interactive and runs in your login shell, so it uses your CLI login.
+For `claude`, the tab removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`
+from the environment. These variables come before the subscription login
+([authentication precedence](https://code.claude.com/docs/en/authentication#authentication-precedence)),
+so the session uses your Pro, Max, Team or Enterprise plan and no API key.
+
+A custom terminal command must return once the tab is open. Example for WezTerm:
+
+```toml
+terminal_app = "wezterm cli spawn -- zsh -lic {command}"
+```
+
+The first time, macOS asks to let PR Marmot control iTerm or Terminal
+(System Settings → Privacy & Security → Automation).
+
 ### Build from source
 
 For local development without Nix, use [mise](https://mise.jdx.dev/):

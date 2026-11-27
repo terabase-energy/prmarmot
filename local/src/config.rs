@@ -60,6 +60,16 @@ pub struct FileConfig {
     pub default_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_agent_permissions: Option<String>,
+    /// The terminal for the terminal agent button: `iTerm`, `Terminal`, or a
+    /// command with `{command}` (and optional `{dir}`). Blank is `Terminal`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_app: Option<String>,
+    /// The agent CLI command the terminal tab starts. Blank is `claude`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_agent: Option<String>,
+    /// The skill the agent runs on the PR, for example `code-review`; blank starts the agent with no prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_skill: Option<String>,
     /// `system` | `light` | `dark`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
@@ -160,6 +170,9 @@ impl Default for FileConfig {
             default_model: None,
             default_prompt: None,
             default_agent_permissions: None,
+            terminal_app: None,
+            terminal_agent: None,
+            terminal_skill: None,
             theme: None,
             view: None,
             default_reviewers: Vec::new(),
