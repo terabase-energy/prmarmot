@@ -755,6 +755,8 @@ pub enum RowAction {
     Open,
     OpenVscode,
     ReviewVscode,
+    /// Open the PR checkout in a terminal tab that runs an agent skill.
+    AgentTerminal,
     Copy(String),
     Details,
     Watch,
@@ -1765,7 +1767,7 @@ impl BoardTableDelegate {
             .relative()
             .w_full()
             .h(px(20.))
-            .pr(px(72.))
+            .pr(px(88.))
             .gap_1()
             .items_center();
         if let Some(tooltip) = self.changed.get(&row.id).cloned() {
@@ -1790,7 +1792,7 @@ impl BoardTableDelegate {
                 div()
                     .id(("vscode-pr", row_ix))
                     .absolute()
-                    .right(px(24.))
+                    .right(px(44.))
                     .top_0()
                     .size(px(20.))
                     .flex()
@@ -1821,7 +1823,7 @@ impl BoardTableDelegate {
                 div()
                     .id(("agents-pr", row_ix))
                     .absolute()
-                    .right_0()
+                    .right(px(22.))
                     .top_0()
                     .size(px(20.))
                     .flex()
@@ -1853,6 +1855,47 @@ impl BoardTableDelegate {
                     })
                     .on_click(|_, _, cx| cx.stop_propagation()),
             );
+            let terminal_handler = handler.clone();
+            let terminal_pr_id = row.id.clone();
+            cell = cell.child(
+                div()
+                    .id(("terminal-pr", row_ix))
+                    .absolute()
+                    .right_0()
+                    .top_0()
+                    .size(px(20.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .text_color(theme.muted_foreground)
+                    .hover(|style| style.bg(theme.muted).text_color(theme.foreground))
+                    .aria_label(format!(
+                        "Run the agent skill on #{} in a terminal",
+                        row.number
+                    ))
+                    .child(
+                        gpui::svg()
+                            .path("icons/terminal.svg")
+                            .size(px(15.))
+                            .text_color(theme.muted_foreground),
+                    )
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Run agent skill in terminal").build(window, cx)
+                    })
+                    .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                        cx.stop_propagation();
+                        if event.click_count == 1 {
+                            terminal_handler(
+                                terminal_pr_id.clone(),
+                                RowAction::AgentTerminal,
+                                window,
+                                cx,
+                            );
+                        }
+                    })
+                    .on_click(|_, _, cx| cx.stop_propagation()),
+            );
             let watched = self.watched.contains(&row.id);
             // A watched PR shows its binoculars always; an unwatched one
             // only while its row is hovered or selected, at the muted ink's
@@ -1871,7 +1914,7 @@ impl BoardTableDelegate {
                 div()
                     .id(("watch-pr", row_ix))
                     .absolute()
-                    .right(px(48.))
+                    .right(px(66.))
                     .top_0()
                     .flex_shrink_0()
                     .size(px(20.))

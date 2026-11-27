@@ -19,6 +19,8 @@ pub mod updates;
 
 pub mod thread_cache;
 
+pub mod terminal;
+
 pub mod worktrees;
 
 #[cfg(all(feature = "agents", unix))]

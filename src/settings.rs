@@ -169,6 +169,9 @@ pub struct SettingsView {
     default_model: Entity<InputState>,
     default_prompt: Entity<InputState>,
     default_agent_permissions: Entity<InputState>,
+    terminal_app: Entity<InputState>,
+    terminal_agent: Entity<InputState>,
+    terminal_skill: Entity<InputState>,
     issue_pattern: Entity<InputState>,
     issue_url: Entity<InputState>,
     theme: ThemePref,
@@ -330,6 +333,21 @@ impl SettingsView {
                     .placeholder("Blank uses VS Code defaults; Codex: full-access")
                     .default_value(file.default_agent_permissions.clone().unwrap_or_default())
             }),
+            terminal_app: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("iTerm, Terminal, or a command with {command}")
+                    .default_value(file.terminal_app.clone().unwrap_or_default())
+            }),
+            terminal_agent: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("claude or codex; blank uses claude")
+                    .default_value(file.terminal_agent.clone().unwrap_or_default())
+            }),
+            terminal_skill: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Skill name; e.g. code-review. Blank: agent only")
+                    .default_value(file.terminal_skill.clone().unwrap_or_default())
+            }),
             default_prompt: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("Optional task prompt; e.g. /code-review")
@@ -418,6 +436,9 @@ impl SettingsView {
             (&this.default_model, "Default agent model"),
             (&this.default_prompt, "Default agent prompt"),
             (&this.default_agent_permissions, "Default agent permissions"),
+            (&this.terminal_app, "Terminal"),
+            (&this.terminal_agent, "Terminal agent"),
+            (&this.terminal_skill, "Terminal skill"),
             (&this.issue_pattern, "Issue ID regular expression"),
             (&this.issue_url, "Issue URL template"),
         ] {
@@ -504,6 +525,18 @@ impl SettingsView {
                 cx,
             );
         }
+        if let Err(error) =
+            prmarmot_local::terminal::Terminal::parse(&self.terminal_app.read(cx).value())
+        {
+            self.advanced = true;
+            return self.show_invalid("Terminal", error, window, cx);
+        }
+        if let Err(error) =
+            prmarmot_local::terminal::skill_name(&self.terminal_skill.read(cx).value())
+        {
+            self.advanced = true;
+            return self.show_invalid("Terminal skill", error, window, cx);
+        }
         let update = SettingsUpdate {
             repositories_dirs: Some(repositories_dirs),
             default_harness: Some(self.default_harness.read(cx).value().trim().to_owned()),
@@ -516,6 +549,9 @@ impl SettingsView {
                     .trim()
                     .to_owned(),
             ),
+            terminal_app: Some(self.terminal_app.read(cx).value().trim().to_owned()),
+            terminal_agent: Some(self.terminal_agent.read(cx).value().trim().to_owned()),
+            terminal_skill: Some(self.terminal_skill.read(cx).value().trim().to_owned()),
             background_refresh_secs: Some(background_refresh),
             thread_refresh_secs: Some(thread_refresh),
             cache_dir: Some(cache_dir),
@@ -1134,6 +1170,10 @@ impl Render for SettingsView {
                     .child(self.field("Default agent permissions", &self.default_agent_permissions, None, cx))
                     .child(div().text_size(type_size::SMALL).child("Codex: default, auto-review, full-access. Claude: default, acceptEdits, plan, auto, bypassPermissions. Copilot: default, assisted, autoApprove. Blank keeps VS Code’s default. Unsupported values are reported before creating a chat."))
                     .child(div().text_size(type_size::SMALL).child("VS Code creates a PR session and manages its worktree from the parent repository using the selected harness/model. Blank prompt sends only a hidden setup message and waits for you; a custom prompt starts that task with the PR URL appended."))
+                    .child(self.field("Terminal", &self.terminal_app, None, cx))
+                    .child(self.field("Terminal agent", &self.terminal_agent, None, cx))
+                    .child(self.field("Terminal skill", &self.terminal_skill, None, cx))
+                    .child(div().text_size(type_size::SMALL).child("The terminal button opens the PR checkout in a new iTerm tab (Terminal opens a new window) and starts the agent CLI with /skill <PR URL> (codex: $skill). With no skill, the agent starts and waits for your input. Claude starts without ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN, so it uses your subscription login. Other terminals: a command with {command}, e.g. wezterm cli spawn -- zsh -lic {command}."))
                     .child(
                         v_flex()
                             .gap_1()
